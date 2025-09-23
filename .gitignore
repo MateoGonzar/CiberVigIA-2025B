@@ -1,1 +1,4 @@
 .pcap
+.DS_Store
+venv
+data

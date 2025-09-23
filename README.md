@@ -32,7 +32,7 @@ El proyecto se alinea con la estrategia académica de la convocatoria 2025B del 
 ### Instalación
 1. Clona el repositorio: `git clone https://github.com/tu-usuario/CiberVigIA-2025B.git`
 2. Crea entorno virtual: `python -m venv venv; source venv/bin/activate` (Linux/Mac) o `venv\Scripts\activate` (Windows).
-3. Instala dependencias: `pip install -r requirements.txt` (crea un `requirements.txt` con las librerías arriba).
+3. Instala dependencias: `pip install -r requirements.txt`.
 4. Configura VMs para pruebas: VirtualBox con Kali Linux (simular ataques) y Ubuntu (ejecutar monitor).
 
 ## Uso
