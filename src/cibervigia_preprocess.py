@@ -1,3 +1,5 @@
+### Script basado en el Jupyter Notebook de Fase 2.
+
 import pandas as pd
 from sklearn.preprocessing import LabelEncoder, StandardScaler
 from imblearn.over_sampling import SMOTE
@@ -98,8 +100,7 @@ for col in ['protocol_type', 'service', 'flag']:
 
 lecic = LabelEncoder()
 for col in data.select_dtypes(include=['object']).columns:
-    if col != 'Label':  # Excluye label
-        data[col] = lecic.fit_transform(data[col].astype(str))
+    data[col] = lecic.fit_transform(data[col].astype(str))
 
 print('Label encoding done.')
 

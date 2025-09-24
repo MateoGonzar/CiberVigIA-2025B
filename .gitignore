@@ -1,4 +1,5 @@
 .pcap
 .DS_Store
 venv
-data
+raw
+processed
