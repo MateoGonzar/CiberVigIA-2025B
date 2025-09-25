@@ -58,7 +58,7 @@ Ejemplo completo: `sudo python main.py` (integra todas fases en un script princi
 ## Contribuyentes
 - Emmanuel Mateo Gonzalez Zaragoza: Backend/ML.
 - Diego Fabio Perez Ramirez: Frontend/Dashboard.
-- Mariana Ruiz Gonzalez: Testing/Acciones.
+- Mariana Ruiz Gonzalez: Testing/Acciones/Frontend.
 - Asesor: Prof. Pedro Misraim Gomez Rodríguez.
 
 ## Agradecimientos
