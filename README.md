@@ -27,11 +27,11 @@ El proyecto se alinea con la estrategia académica de la convocatoria 2025B del 
   - Flask/React (para dashboard): `pip install flask` o npm para React.
 - Entorno: Linux/Mac recomendado (para iptables y privilegios sudo); Windows posible (WSL).
 - Datasets: NSL-KDD o CIC-IDS2017 (descargar manualmente).
-- IBM Cloud: Cuenta gratuita para Watson ML (opcional).
+- Modelos de IA: [https://drive.google.com/drive/u/1/folders/1yeI0QsZdkIrJMVf3vj80kXn9-iYg9fLc](https://drive.google.com/drive/folders/1yeI0QsZdkIrJMVf3vj80kXn9-iYg9fLc?usp=sharing)
 
 ### Instalación
 1. Clona el repositorio: `git clone https://github.com/tu-usuario/CiberVigIA-2025B.git`
-2. Crea entorno virtual: `python -m venv venv; source venv/bin/activate` (Linux/Mac) o `venv\Scripts\activate` (Windows).
+2. Crea entorno virtual (o ejecutarlo en local): `python -m venv venv; source venv/bin/activate` (Linux/Mac) o `venv\Scripts\activate` (Windows).
 3. Instala dependencias: `pip install -r requirements.txt`.
 4. Configura VMs para pruebas: VirtualBox con Kali Linux (simular ataques) y Ubuntu (ejecutar monitor).
 
