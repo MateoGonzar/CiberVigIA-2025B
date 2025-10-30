@@ -247,6 +247,39 @@ def packet_callback(packet):
             elif not flows[key]['current_active_start']:
                 flows[key]['current_active_start'] = flows[key]['start_time']
 
+        if duration > 10.0:
+            del flows[key]
+            flows[key] = {
+                'start_time': current_time,
+                'last_time': current_time,
+                'fwd_packets': 0,
+                'bwd_packets': 0,
+                'fwd_bytes': 0,
+                'bwd_bytes': 0,
+                'fwd_lengths': [],
+                'bwd_lengths': [],
+                'flow_iat': [],
+                'fwd_iat': [],
+                'bwd_iat': [],
+                'fin_count': 0,
+                'syn_count': 0,
+                'rst_count': 0,
+                'psh_count': 0,
+                'ack_count': 0,
+                'urg_count': 0,
+                'cwe_count': 0,
+                'ece_count': 0,
+                'init_win_fwd': packet[TCP].window if TCP in packet and fwd else 0,
+                'init_win_bwd': packet[TCP].window if TCP in packet and not fwd else 0,
+                'act_data_pkt_fwd': 0,
+                'min_seg_size_fwd': 0,
+                'active_times': [],
+                'idle_times': [],
+                'last_packet_time': current_time,
+                'is_idle': False,
+                'current_active_start': None
+            }
+
         # Chequeo suspicious ports
         if packet.haslayer('TCP'):
             if is_suspicious_port(dst_port, 'TCP'):
