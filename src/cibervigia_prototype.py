@@ -1,19 +1,111 @@
-import joblib
-from scapy.all import sniff, IP, TCP, UDP
+import os
+import platform
+
+os.environ["KERAS_BACKEND"] = "torch"
+
+# Detectar SO 
+is_windows = platform.system() == "Windows"
+is_macos = platform.system() == "Darwin"
+
+if is_macos:
+    os.environ["PYTORCH_ENABLE_MPS_FALLBACK"] = "1"
+    print("Setting MPS fallback to CPU for unsupported ops.")
+
+import sys
+import requests
+from joblib import load
+from scapy.all import sniff, IP, TCP, UDP, get_if_addr, get_if_list, conf
 import datetime
-import pandas as pd
 from plyer import notification  # Para alertas desktop (pip install plyer)
 import subprocess  # Para iptables
-from flask import Flask, render_template_string, request  # Para dashboard simple (pip install flask)
+from flask import Flask, jsonify, render_template_string, request # Para dashboard simple (pip install flask)
 from threading import Thread  # Para correr dashboard en background
 import time
 import numpy as np
+from keras.saving import load_model
 import warnings
+import logging
+from logging.handlers import RotatingFileHandler
+from ipaddress import ip_address, ip_network
 
+# Warnings ignore
 warnings.filterwarnings("ignore", category=UserWarning)
 
+# Configurar logger
+logger = logging.getLogger('CiberVigIA')
+handler = RotatingFileHandler('vigia_logs.txt', maxBytes=10*1024*1024, backupCount=5)
+logger.addHandler(handler)
+logger.setLevel(logging.INFO)
+
+# Filtro dinámico de IPs cloud
+def update_cloud_ips():
+    try:
+        response = requests.get('https://ip-ranges.amazonaws.com/ip-ranges.json', timeout=5)
+        aws_ips = [prefix['ip_prefix'] for prefix in response.json()['prefixes']]
+        response = requests.get('https://www.cloudflare.com/ips-v4', timeout=5)
+        cloudflare_ips = response.text.split('\n')
+        response = requests.get('https://download.microsoft.com/download/7/1/d/71d86715-5596-4529-9b13-da13a5de5b63/ServiceTags_Public_20251020.json')  # Ajusta fecha/semana
+        data = response.json()
+        azure_ips = [prefix['properties']['addressPrefixes'][0] for prefix in data['values'] if 'AzureCloud' in prefix['id']]
+        return aws_ips + cloudflare_ips + azure_ips
+    except Exception as e:
+        print(f"Error actualizando IPs cloud: {e}")
+        return ['104.16.0.0/12', '172.64.0.0/13', '44.192.0.0/10', '52.182.0.0/16', '20.36.0.0/14']  # Fallback
+    
+cloud_ips = update_cloud_ips()
+def is_cloud_ip(ip):
+    return any(ip_address(ip) in ip_network(cidr) for cidr in cloud_ips)
+
+# Checar reputacion
+def check_ip_reputation(ip):
+    api_key = '8763e1179e5c8697674cd8dbcaada81579d853f69ef265c1b6a14ba7811d91c688b93b3d10cd0752'
+    url = f'https://api.abuseipdb.com/api/v2/check?ipAddress={ip}&maxAgeInDays=90'
+    headers = {'Key': api_key, 'Accept': 'application/json'}
+    response = requests.get(url, headers=headers)
+    data = response.json()
+    score = data['data']['abuseConfidenceScore']
+    if score > 25:
+        print(f"IP {ip} tiene score de abuso {score}")
+        return True
+    with open('whitelist.txt', 'a') as f:
+        f.write(ip + '\n')
+    return False
+
+def get_active_interface():
+    print("Interfaces disponibles:", get_if_list())
+    return input("Selecciona interfaz (e.g., en0): ")
+
+# Mensaje inicial para usuarios no técnicos
+print("Bienvenido a CiberVigIA AI - Monitor de Red para Hogares y PyMEs")
+print("1. Asegúrese de correr con sudo (Linux) o admin (Windows).")
+print("2. Dashboard en http://localhost:5000 (abra en browser).")
+print("3. Alertas automáticas para amenazas detectadas.")
+
+# Auto-detección de interfaz
+iface = get_active_interface()
+ip = get_if_addr(conf.iface)
+
+print(f"Interfaz activa: {iface}")
+print(f"Dashboard: http://localhost:5000 (desde este equipo)")
+print(f"Desde otros dispositivos: http://{ip}:5000")
+                                                               
 # Paso 1: Cargar modelo (de Fase 3)
-model = joblib.load('models/modelo_rf_cic.pkl')  
+# model = load('models/modelo_rf_cic.pkl')  - RF
+def get_resource_path(relative_path):
+    # Devuelve la ruta absoluta al recurso en el paquete .app o en el entorno de desarrollo.
+    if hasattr(sys, '_MEIPASS'):
+        # En el paquete .app, los archivos de datos están en Contents/Resources
+        return os.path.join(sys._MEIPASS, relative_path)
+    return os.path.join(os.path.abspath("."), relative_path)
+
+# Carga los archivos utilizando la función get_resource_path
+model_path = get_resource_path('models/modelo_lstm_nadam_cic.keras')
+scaler_path = get_resource_path('models/scaler_cic.pkl')
+le_path = get_resource_path('models/label_encoder_cic.pkl')
+
+model = load_model(model_path)
+scaler = load(scaler_path)
+le = load(le_path)
 
 # Lista de puertos sospechosos (de análisis previo)
 def is_suspicious_port(dst_port, protocol):
@@ -35,6 +127,9 @@ flows = {}  # key: (src_ip, dst_ip, src_port, dst_port, proto), value: dict con 
 alerts = []  # Lista para dashboard (timestamp, ip, puerto, predicción, features vector)
 
 def packet_callback(packet):
+    if not (packet.haslayer(IP) and (packet.haslayer(TCP) or packet.haslayer(UDP))):
+        return
+
     timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     if IP in packet:
         src_ip = packet[IP].src
@@ -43,6 +138,19 @@ def packet_callback(packet):
         src_port = packet[TCP].sport if TCP in packet else packet[UDP].sport if UDP in packet else 0
         dst_port = packet[TCP].dport if TCP in packet else packet[UDP].dport if UDP in packet else 0
         key = (src_ip, dst_ip, src_port, dst_port, proto)
+
+        # Cargar whitelist
+        whitelist = []
+        if os.path.exists('whitelist.txt'):
+            with open('whitelist.txt', 'r') as f:
+                whitelist = f.read().splitlines()
+
+        if any([
+            src_ip.startswith('127.'), dst_ip.startswith('127.'),
+            src_ip.startswith('172.'), dst_ip.startswith('172.'),
+            src_ip == dst_ip  # mismo host
+        ]) or is_cloud_ip(src_ip) or is_cloud_ip(dst_ip) or src_ip in whitelist or dst_ip in whitelist:
+            return
 
         current_time = time.time()
         packet_len = len(packet)
@@ -233,27 +341,85 @@ def packet_callback(packet):
             idle_mean, idle_std, idle_max, idle_min
         ]
 
-        # Predice (asume vector coincide con model input
-        vector_df = pd.DataFrame([vector], columns=model_columns[:len(vector)]) 
-        pred = model.predict(vector_df)[0]
-        print(pred)
-        if pred != 'BENIGN':
-            alert_msg = f"[{timestamp}] Tráfico sospechoso: {src_ip} -> {dst_ip} | Puerto: {dst_port} | Predicción: {pred}"
-            print(alert_msg)
-            alerts.append(alert_msg)
+        try:
+            # Escalar vector
+            vector_scaled = scaler.transform([vector])
+            vector_reshaped = np.array(vector_scaled).reshape(1, 1, len(vector))
 
-            # Acción: Bloqueo, Notificación, Log
-            subprocess.call(['sudo', 'iptables', '-A', 'INPUT', '-s', src_ip, '-j', 'DROP'])
-            notification.notify(title='Alerta CiberVigIA', message=alert_msg, timeout=10)
-            with open('vigia_logs.txt', 'a') as f:
-                f.write(alert_msg + '\n')
+            # Predice
+            pred_probs = model.predict(vector_reshaped, verbose=0)
+            pred = le.inverse_transform([np.argmax(pred_probs, axis=1)[0]])[0]
+        except Exception as e:
+            print(f"Error en predicción: {e}")
+            return
+        
+        omit = False
+
+        if pred != 'BENIGN':
+
+            if dst_port == 80 or dst_port == 443:
+                alert_msg = f"Tráfico sospechoso: {src_ip} -> {dst_ip} | Puerto: {dst_port} | Buscando reputación..."
+                print(alert_msg)
+                if src_ip == ip:
+                    reputation = check_ip_reputation(dst_ip)
+                    print(reputation)
+                    if reputation is False:
+                        omit = True
+                else:
+                    reputation = check_ip_reputation(src_ip)
+                    print(reputation)
+                    if reputation is False:
+                        omit = True
+
+            if not omit:
+                alert_msg = f"[{timestamp}] Tráfico sospechoso: {src_ip} -> {dst_ip} | Puerto: {dst_port} | Predicción: {pred}"
+                alerts.append({'timestamp': timestamp, 'ip': f"{src_ip} -> {dst_ip}", 'port': dst_port, 'pred': pred, 'action': 'Bloqueo y Notificación' if src_ip != ip else 'Notificación'})
+
+                # Solo bloquear si la IP de origen no es la IP local
+                if src_ip != ip:
+                    print(f"Bloqueando tráfico de la IP maliciosa: {src_ip}")
+                    # Acción: Bloqueo, Notificación, Log
+                    if platform.system() == 'Darwin':  # macOS
+                        subprocess.run(
+                            ['sudo', 'pfctl', '-f', '-', '-E'],
+                            input=f"block in from {src_ip} to any".encode(),
+                        )
+                    elif platform.system() == 'Windows':
+                        # Bloqueo con netsh en Windows
+                        subprocess.run(['netsh', 'advfirewall', 'firewall', 'add', 'rule', 'name="CiberVigIA Block"', 'dir=in', 'action=block', 'remoteip=' + src_ip])
+                    else:
+                        # Bloqueo con iptables en Linux
+                        subprocess.run(['sudo', 'iptables', '-A', 'INPUT', '-s', src_ip, '-j', 'DROP'])
+                    
+                    notification.notify(title='Alerta CiberVigIA', message=alert_msg, timeout=10)
+
+                else:
+                    # Aquí se registra que se detectó un paquete malicioso de la IP propia,
+                    # pero no se bloqueó. Esto podría indicar un malware en tu propia máquina.
+                    print(f"Alerta: Tráfico sospechoso detectado desde tu IP ({ip}). Revisa posibles apps maliciosas.")
+
+                    notification.notify(title='Alerta CiberVigIA', message=f"Se detectó tráfico malicioso desde tu propia IP: {ip}", timeout=10)
+                
+                logger.info(alert_msg)
+
 
 # Paso para correr dashboard Flask en background
 app = Flask(__name__)
 
+@app.route('/api/alerts')
+def api_alerts():
+    # Asume alerts es lista de dicts (actualiza tu alerts a [{ 'timestamp': ..., 'ip': ..., 'port': ..., 'pred': ..., 'action': ... }])
+    return jsonify(alerts)
+
+@app.route('/whitelist', methods=['POST'])
+def whitelist_ip():
+    ip = request.form['ip']
+    with open('whitelist.txt', 'a') as f:
+        f.write(ip + '\n')
+    return jsonify({'status': f'IP {ip} añadida a whitelist'})
+
 @app.route('/')
 def dashboard():
-    # HTML con tabla, colores y refresh auto (cada 10s con JS)
     html = """
     <html>
     <head>
@@ -266,25 +432,29 @@ def dashboard():
             th { background-color: #4CAF50; color: white; }
             tr:nth-child(even) { background-color: #f2f2f2; }
             .alert { color: red; font-weight: bold; }
-            .refresh-btn { text-align: center; margin-top: 10px; }
+            .refresh-btn, .whitelist-form { text-align: center; margin-top: 10px; }
         </style>
         <script>
             function refreshPage() { location.reload(); }
-            setInterval(refreshPage, 10000);  // Refresh auto cada 10s
+            setInterval(refreshPage, 10000);
         </script>
     </head>
     <body>
         <h1>CiberVigIA Dashboard - Alertas en Tiempo Real</h1>
-        <p>Monitor accesible para usuarios no técnicos. Muestra alertas de amenazas detectadas, con explicaciones simples. Actualización automática cada 10 segundos.</p>
+        <p>Monitor accesible para usuarios no técnicos. Muestra alertas de amenazas detectadas. Actualización cada 10 segundos.</p>
+        <form class="whitelist-form" action="/whitelist" method="post">
+            <input type="text" name="ip" placeholder="IP a confiar (e.g., 104.18.18.125)">
+            <button type="submit">Añadir a Whitelist</button>
+        </form>
         <table>
             <tr><th>Timestamp</th><th>IP Fuente -> IP Destino</th><th>Puerto</th><th>Predicción</th><th>Acción Tomada</th></tr>
             {% for alert in alerts %}
             <tr>
-                <td>{{ alert.split('|')[0] }}</td>
-                <td class="alert">{{ alert.split('|')[1] }}</td>
-                <td>{{ alert.split('|')[2] }}</td>
-                <td>{{ alert.split('|')[3] }}</td>
-                <td>Bloqueo IP y Notificación Enviada</td>
+                <td>{{ alert.timestamp }}</td>
+                <td class="alert">{{ alert.ip }}</td>
+                <td>{{ alert.port }}</td>
+                <td>{{ alert.pred }}</td>
+                <td>{{ alert.action }}</td>
             </tr>
             {% endfor %}
         </table>
@@ -302,5 +472,5 @@ def run_dashboard():
 # Main: Captura en tiempo real (sudo requerido)
 if __name__ == "__main__":
     Thread(target=run_dashboard).start()  # Dashboard en background
-    print("Prototipo corriendo. Dashboard en http://localhost:5000")
-    sniff(prn=packet_callback, store=0)  # Captura indefinida (ctrl+C para parar)
+    print("Prototipo corriendo.")
+    sniff(iface=iface, filter="tcp or udp", prn=packet_callback, store=0)
